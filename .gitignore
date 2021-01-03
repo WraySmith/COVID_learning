@@ -1,0 +1,11 @@
+__pycache__
+.ipynb_checkpoints
+.vscode
+
+# misc files
+data/news/articles_*
+data/news/url_list*
+example
+alt_files
+book.ipynb
+ss
