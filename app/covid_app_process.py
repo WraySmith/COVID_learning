@@ -1,84 +1,168 @@
 # Import packages
 import math
+import requests
+import datetime
+import os.path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
-url = "https://health-infobase.canada.ca/src/data/covidLive/covid19.csv"
-covid_1 = pd.read_csv(url)
-covid_1["date"] = pd.to_datetime(covid_1["date"], format="%d-%m-%Y")
 
-# only look at BC and reset the index
-# note there is already a column called index that retains the original dataframe index
-covid_2 = (
-    covid_1[covid_1["prname"] == "British Columbia"]
-    .drop(columns=["prnameFR"])
-    .copy()
-    .reset_index()
-)
-covid_2.rename(columns={"index": "original_index"}, inplace=True)
+def load_df(dir_path="./data/covid/"):
+    current_date = datetime.date.today().strftime("%Y%m%d")
+    covid_mod_filename = "covid19_" + current_date + "_mod.csv"
+    covid_mod_filepath = dir_path + covid_mod_filename
+    if os.path.isfile(covid_mod_filepath):
+        print("File exists")
+        covid_mod_data = pd.read_csv(covid_mod_filepath, parse_dates=["date"])
 
-# add a new column for days elapsed since start date
-covid_2["days_elapse"] = (covid_2["date"] - covid_2["date"].min()).dt.days
-
-# create a new column which takes the difference between cumulative case counts
-covid_2["new_count"] = covid_2["numtotal"] - covid_2["numtotal"].shift()
-covid_2.loc[0, "new_count"] = covid_2.loc[0, "numtotal"]
-
-# create a check column which assess if "new_count" is the same as numtoday
-covid_2["new_count_check"] = covid_2["new_count"] == covid_2["numtoday"]
-
-# based on the above, decide to use the new_count column as the daily values
-# this will ensure we're preserving the cumulative total count
-
-# also create new daily count columns for deaths and recover
-covid_2["numdeaths"].fillna(0, inplace=True)
-covid_2["new_deaths"] = covid_2["numdeaths"] - covid_2["numdeaths"].shift()
-covid_2.loc[0, "new_deaths"] = covid_2.loc[0, "numdeaths"]
-
-covid_2["numrecover"].fillna(0, inplace=True)
-covid_2["new_recover"] = covid_2["numrecover"] - covid_2["numrecover"].shift()
-covid_2.loc[0, "new_recover"] = covid_2.loc[0, "numrecover"]
-
-# change the date column to the index and the drop the date column
-covid_2.index = pd.DatetimeIndex(covid_2.date)
-covid_2.drop(columns="date", inplace=True)
-# create the complete date range
-idx = pd.date_range(covid_2.index.min(), covid_2.index.max())
-# update the index with the full date range and fill the new rows with zeros
-covid_2 = covid_2.reindex(idx, fill_value=0)
-# move the date index to a column and create a new integer index
-covid_2.reset_index(inplace=True)
-covid_2.rename(columns={"index": "date"}, inplace=True)
-
-# Need to recalculate days elapsed to populate new date rows
-covid_2["days_elapse"] = (covid_2["date"] - covid_2["date"].min()).dt.days
-
-# create a copy of the dataframe for modifications
-covid_3 = covid_2.copy()
-
-# create new columns for the modifications
-covid_3["new_count_update"] = covid_3["new_count"]
-covid_3["new_deaths_update"] = covid_3["new_deaths"]
-covid_3["new_recover_update"] = covid_3["new_recover"]
-
-# remove any rows with zero counts at the end of the dataframe as they represent unreported values
-# use the counts column for this as it is assumed any days without counts would also not have counts for deaths and recovery
-# but possibly not the other way around
-max_index = len(covid_3) - 1
-print("inital dataframe length", max_index)
-
-# work backwards through the data frame removing rows until a non-zero count in encountered
-for i in range(max_index):
-    rev_i = max_index - i
-    if covid_3.loc[rev_i, "new_count"] == 0:
-        covid_3.drop([rev_i], inplace=True)
-        print("dropped row ", rev_i)
-    # break the loop once a non-zero value is found
     else:
-        break
+        print("File does not exist")
+        covid_raw_filename = "covid19_" + current_date + "_raw.csv"
+        covid_raw_filepath = dir_path + covid_raw_filename
+        if os.path.isfile(covid_raw_filepath):
+            covid_raw_data = pd.read_csv(covid_raw_filepath, parse_dates=["date"])
+        else:
+            url = "https://health-infobase.canada.ca/src/data/covidLive/covid19-download.csv"
+            covid_raw_data = pd.read_csv(url, parse_dates=["date"])
+            covid_raw_data.to_csv(covid_raw_filepath, index=False, header=True)
 
-max_index = len(covid_3) - 1
-print("updated dataframe length", max_index)
+        # process raw data
+        covid_mod_data = process_raw_df(covid_raw_data)
+        # export to processed data to csv
+        covid_mod_data.to_csv(covid_mod_filepath, index=False, header=True)
+
+    return covid_mod_data
+
+
+def process_raw_df(df):
+    covid_data = df.copy()
+    # only look at BC and reset the index
+    covid_data = (
+        covid_data[covid_data["prname"] == "British Columbia"]
+        .drop(columns=["prnameFR"])
+        .reset_index(drop=True)
+    )
+    # add a new column for days elapsed since start date
+    covid_data["days_elapse"] = (covid_data["date"] - covid_data["date"].min()).dt.days
+    # create a new column which takes the difference between cumulative case counts
+    covid_data["new_count"] = covid_data["numtotal"] - covid_data["numtotal"].shift()
+    covid_data.loc[0, "new_count"] = covid_data.loc[
+        0, "numtotal"
+    ]  # set the first day in new_count to numtotal val
+    # also create new daily count columns for deaths and recover
+    covid_data["numdeaths"].fillna(0, inplace=True)
+    covid_data["new_deaths"] = covid_data["numdeaths"] - covid_data["numdeaths"].shift()
+    covid_data.loc[0, "new_deaths"] = covid_data.loc[0, "numdeaths"]
+
+    covid_data["numrecover"].fillna(0, inplace=True)
+    covid_data["new_recover"] = (
+        covid_data["numrecover"] - covid_data["numrecover"].shift()
+    )
+    covid_data.loc[0, "new_recover"] = covid_data.loc[0, "numrecover"]
+
+    # change the date column to the index and the drop the date column
+    covid_data.index = pd.DatetimeIndex(covid_data.date)
+    covid_data.drop(columns="date", inplace=True)
+    # create the complete date range
+    idx = pd.date_range(covid_data.index.min(), covid_data.index.max())
+    # update the index with the full date range and fill the new rows with zeros
+    covid_data = covid_data.reindex(idx, fill_value=0)
+    # move the date index to a column and create a new integer index
+    covid_data.reset_index(inplace=True)
+    covid_data.rename(columns={"index": "date"}, inplace=True)
+    # Need to recalculate days elapsed to populate new date rows
+    covid_data["days_elapse"] = (covid_data["date"] - covid_data["date"].min()).dt.days
+    covid_data["new_recover"] = covid_data["new_recover"].apply(
+        lambda x: x if x > 0 else 0
+    )
+
+    # remove any rows with zero counts at the end of the dataframe as they represent unreported values
+    # use the counts column for this as it is assumed any days without counts would also not have counts for deaths and recovery
+    # but possibly not the other way around
+    max_index = len(covid_data) - 1
+    print("inital dataframe length", max_index)
+
+    # work backwards through the data frame removing rows until a non-zero count in encountered
+    for i in range(max_index):
+        rev_i = max_index - i
+        if covid_data.loc[rev_i, "new_count"] == 0:
+            covid_data.drop([rev_i], inplace=True)
+            print("dropped row ", rev_i)
+        # break the loop once a non-zero value is found
+        else:
+            break
+
+    max_index = len(covid_data) - 1
+    print("updated dataframe length", max_index)
+
+    # loops through the dataframe applying the function above as zero counts are indicated
+    # originally did this as a single loo
+    # use the counts column for this as it is assumed any days without counts would also not have counts for deaths and recovery
+    # but possibly not the other way around
+    for ind, row in covid_data.iterrows():
+        # start above index 30 for counts and deaths as discussed above
+        if ind > 30 and row["new_count_update"] == 0:
+            corrector(covid_data, "new_count_update", ind)
+        if ind > 30 and row["new_deaths_update"] == 0:
+            corrector(covid_data, "new_deaths_update", ind)
+        # start above index 55 for recoveries as discussed above
+        if ind > 55 and row["new_recover_update"] == 0:
+            corrector(covid_data, "new_recover_update", ind)
+
+    # create new columns representing the cumulative values after the corrections above are applied
+    covid_data["new_numtotal"] = covid_data["new_count_update"].cumsum()
+    covid_data["new_numdeaths"] = covid_data["new_deaths_update"].cumsum()
+    covid_data["new_numrecover"] = covid_data["new_recover_update"].cumsum()
+
+    # create a new dataframe with just the columns of interest
+    covid_data_out = covid_data[
+        [
+            "date",
+            "days_elapse",
+            "new_count_update",
+            "new_deaths_update",
+            "new_recover_update",
+            "new_numtotal",
+            "new_numdeaths",
+            "new_numrecover",
+        ]
+    ].copy()
+
+
+# Function to smooth out values over the unreported dates
+# Assuming that an unreported case count is 0 value
+# NOTE THAT THIS FUNCTION PERFORMS INPLACE OPERATIONS!
+def corrector(df, col_name, ind):
+    # check if the column of interest has a zero value at the index
+    if df.loc[ind, col_name] == 0:
+        temp_list = [ind]
+        counter = 1
+
+        # continue looping forward and adding to the list for any zero values
+        while df.loc[(ind + counter), col_name] == 0:
+            temp_list.append(ind + counter)
+            counter += 1
+            # break the loop if the end of the dataframe is reached
+            if ind + counter == max_index:
+                break
+
+        # also append the first non-zero value as this will represent the cumulative count from the zero days
+        temp_list.append(ind + counter)
+
+        # the following calculations determine the average for the days
+        temp_length = len(temp_list)
+        old_value_count = df.loc[(temp_list[-1]), col_name]
+        # only use complete integers (rounding down to ensure don't increase the count)
+        new_values_count = math.floor(old_value_count / temp_length)
+        # calculate the remainder from rounding downto ensure complete count is preserved
+        remainder_count = old_value_count - (temp_length * new_values_count)
+
+        # replacing the corresponding values stored in the temporary index list
+        for ind_replace in temp_list:
+            # if the last value (which is the non-zero count in the index list), add the remainder
+            if ind_replace == temp_list[-1]:
+                df.loc[ind_replace, col_name] = new_values_count + remainder_count
+            else:
+                df.loc[ind_replace, col_name] = new_values_count
